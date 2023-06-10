@@ -5,8 +5,6 @@ local actions = require("telescope.actions")
 local pickers = require("telescope.pickers")
 local conf = require("telescope.config").values
 
-local utils = require("telescope-misc.utils")
-
 local namespace = vim.api.nvim_create_namespace("TelescopeCustomPreviewers")
 
 local telescope_misc = {}
@@ -15,79 +13,82 @@ function telescope_misc.syntax(opts)
 	opts = opts or {}
 	local initial_buffer = vim.api.nvim_get_current_buf()
 
-	function make_syntax_values()
-		local syntax = vim.split(vim.api.nvim_exec(":syntax", true), "\n", {})
+	function make_finder()
+		local raw_syntax = vim.split(vim.api.nvim_exec(":syntax", true), "\n", {})
 
-		local entries = vim.tbl_map(
-			function(item)
-				return vim.split(item, " ", {})[1]
-			end,
-			vim.tbl_filter(function(item)
-				if vim.startswith(item, " ") or vim.startswith(item, "---") then
-					return false
+		local syntaxes = {}
+		for _, line in pairs(raw_syntax) do
+			if not vim.startswith(line, "---") then
+				if line:sub(1, 1) ~= " " then
+					table.insert(syntaxes, { line })
+				else
+					table.insert(syntaxes[#syntaxes], line)
 				end
-				return true
-			end, syntax)
-		)
-		return syntax, entries
-	end
+			end
+		end
 
-	local syntax, entries = make_syntax_values()
-
-	function make_finder(new_entries)
 		return finders.new_table({
-			results = new_entries,
-			entry_maker = function(entry)
+			results = syntaxes,
+			entry_maker = function(syntax)
+				local name = vim.split(syntax[1], " ", {})[1]
 				return {
-					value = entry,
+					value = syntax,
 					display = function()
-						local highligh_groups = {}
-						return entry, highligh_groups
+						return name, {}
 					end,
-					ordinal = entry,
+					ordinal = name,
 				}
 			end,
 		})
 	end
 
-	utils.state_aware_picker(opts, {
-		prompt_title = "Syntax",
-		finder = make_finder(entries),
-		sorter = conf.generic_sorter(opts),
-		initial_preview_value = syntax,
-		previewer = {
-			on_changed_entry = function(entry, state)
-				local line = utils.search_text_on_previewer(entry.value)
-				vim.api.nvim_buf_clear_namespace(state.previewer.bufnr, namespace, 0, -1)
-				vim.api.nvim_buf_add_highlight(state.previewer.bufnr, namespace, "Cursor", line, 0, -1)
+	local has_previewer_been_initialized = false
+	pickers
+		.new(opts, {
+			prompt_title = "Syntax",
+			finder = make_finder(),
+			sorter = conf.generic_sorter(opts),
+			previewer = previewers.new_buffer_previewer({
+				title = "Syntax",
+				get_buffer_by_name = function()
+					return "Syntax"
+				end,
+				define_preview = function(self, entry)
+					local bufnr = self.state.bufnr
+					if not has_previewer_been_initialized then
+						vim.api.nvim_win_set_option(self.state.winid, "wrap", true)
+						has_previewer_been_initialized = true
+					end
+					-- vim.api.nvim_buf_set_option(bufnr, "filetype", "markdown")
+					vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, entry.value)
+				end,
+			}),
+			attach_mappings = function(prompt, mapping)
+				actions.select_default:replace(function() end)
+
+				local function delete_syntax()
+					vim.api.nvim_buf_call(initial_buffer, function()
+						local selection = action_state.get_selected_entry().value
+						vim.cmd(":syntax clear " .. selection)
+
+						local picker = action_state.get_current_picker(prompt)
+						picker:refresh()
+					end)
+				end
+
+				local function reset_syntax()
+					vim.cmd([[:syntax reset]])
+				end
+
+				mapping("n", "x", delete_syntax)
+				mapping("i", "<C-x>", delete_syntax)
+				mapping("n", "r", reset_syntax)
+				mapping("i", "<C-r>", reset_syntax)
+
+				return true
 			end,
-		},
-		attach_mappings = function(state, mapping)
-			actions.select_default:replace(function() end)
-
-			local function delete_syntax()
-				vim.api.nvim_buf_call(initial_buffer, function()
-					local selection = action_state.get_selected_entry().value
-					vim.cmd(":syntax clear " .. selection)
-
-					local new_syntax, new_entries = make_syntax_values()
-					state.picker():refresh(make_finder(new_entries))
-					state.refresh_previewer(new_syntax)
-				end)
-			end
-
-			local function reset_syntax()
-				vim.cmd([[:syntax reset]])
-			end
-
-			mapping("n", "x", delete_syntax)
-			mapping("i", "<C-x>", delete_syntax)
-			mapping("n", "r", reset_syntax)
-			mapping("i", "<C-r>", reset_syntax)
-
-			return true
-		end,
-	})
+		})
+		:find()
 end
 
 function telescope_misc.extensions(opts, selected_extension)
